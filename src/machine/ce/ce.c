@@ -43,7 +43,6 @@
 
 ce_cpu_t cpu;
 asic_state_t asic;
-panel_state_t panel;
 
 static uint32_t lcd_frame_count;
 static uint32_t flash_generation;
@@ -109,10 +108,6 @@ eZ80portrange_t init_usb(void) { return null_device; }
 void usb_reset(void) {}
 static eZ80portrange_t init_uart(void) { return null_device; }
 static void uart_reset(void) {}
-
-void panel_spi_select(bool low) { (void)low; }
-uint8_t panel_spi_peek(uint32_t *rxData) { (void)rxData; return 9; }     /* as CEmu */
-uint8_t panel_spi_transfer(uint32_t txData, uint32_t *rxData) { (void)txData; (void)rxData; return 9; }
 
 static void (*const reset_procs[])(void) = {
     sched_reset, flash_reset, mem_reset, lcd_reset, keypad_reset, gpt_reset, rtc_reset,
@@ -405,8 +400,9 @@ uint64_t ce_total_cycles(void) { return sched_total_cycles(); }
  *
  * Layout: "N84C", version, Flash size, then the CPU registers (the part of
  * ez80_t before the page tables), N84 CPU extras, and each CEmu module's
- * own save block, then the mem_state_t and RAM. Flash contents are not
- * included: they are written back to the ROM file at the same time.
+ * own save block, then the mem_state_t and RAM, then the panel's MADCTL byte
+ * (optional when loading). Flash contents are not included: they are written
+ * back to the ROM file at the same time.
  * ==================================================================== */
 
 #define CE_STATE_MAGIC   "N84C"
@@ -423,7 +419,8 @@ bool ce_save_state(FILE *f) {
            rtc_save(f) && sha256_save(f) && gpt_save(f) && cxxx_save(f) && spi_save(f) &&
            sched_save(f) &&
            fwrite(&mem, sizeof mem, 1, f) == 1 &&
-           fwrite(mem.ram.block, SIZE_RAM, 1, f) == 1;
+           fwrite(mem.ram.block, SIZE_RAM, 1, f) == 1 &&
+           panel_save(f);               /* appended: older states end after the RAM */
 }
 
 bool ce_load_state(FILE *f) {
@@ -446,6 +443,7 @@ bool ce_load_state(FILE *f) {
     mem.flash.size = saved_ptrs.flash.size;
     mem.ram.block = saved_ptrs.ram.block;
     ok = ok && fread(mem.ram.block, SIZE_RAM, 1, f) == 1;
+    ok = ok && panel_restore(f);        /* absent in states saved before the panel model */
     if (!ok) return false;
     emu_set_lcd_callback(lcd_frame_cb, NULL);
     lcd_update();
@@ -464,9 +462,9 @@ static inline uint32_t swap_rb565(uint32_t c) {   /* swap the 5-bit R and B fiel
 
 bool ce_lcd_render(uint16_t *out) { return ce_lcd_render_rows(out, 0, CE_LCD_H); }
 
-bool ce_lcd_render_rows(uint16_t *out, unsigned y0, unsigned y1) {
-    if (y1 > CE_LCD_H) y1 = CE_LCD_H;
-    if (y0 >= y1) return true;
+/* Rows [y0, y1) of the frame buffer read in raster order, 320 pixels per row
+ * (the OS layout: the panel's MV bit is set). */
+static bool render_rows_raster(uint16_t *out, unsigned y0, unsigned y1) {
     uint16_t *o = out + y0 * CE_LCD_W, *end = out + y1 * CE_LCD_W;
     uint32_t ctrl = lcd.control;
     if (!(ctrl & 1 << 11) || !lcd.data || lcd.data >= lcd.data_end) {
@@ -541,4 +539,53 @@ bool ce_lcd_render_rows(uint16_t *out, unsigned y0, unsigned y1) {
     }
     while (o < end) *o++ = 0;
     return true;
+}
+
+/*
+ * Column-major frame buffer (the panel's MV bit is cleared, as lcddrvce
+ * programs do): the screen pixel (x, y) is the frame buffer's pixel number
+ * x * 240 + y. Rows [y0, y1) of the screen.
+ */
+static bool render_rows_columns(uint16_t *out, unsigned y0, unsigned y1) {
+    uint32_t ctrl = lcd.control;
+    if (!(ctrl & 1 << 11) || !lcd.data || lcd.data >= lcd.data_end) {
+        memset(out + y0 * CE_LCD_W, 0, (size_t)(y1 - y0) * CE_LCD_W * sizeof *out);
+        return false;
+    }
+    const uint8_t *src = (const uint8_t *)lcd.data;
+    size_t bytes = (size_t)((const uint8_t *)lcd.data_end - src);
+
+    if ((ctrl >> 1 & 7) == 3 && !(ctrl & 1 << 9) && bytes >= (size_t)CE_LCD_W * CE_LCD_H) {
+        /* 8 bpp palette, pixels in byte order: look the pixels up straight
+         * from the frame buffer (stride 240 along a screen row) */
+        const uint16_t *pal = lcd.palettes[!(ctrl & 1 << 8) ? 1 : 0];
+        for (unsigned y = y0; y < y1; y++) {
+            uint16_t *o = out + y * CE_LCD_W;
+            const uint8_t *p = src + y;
+            for (unsigned x = 0; x < CE_LCD_W; x += 4, o += 4, p += 4 * CE_LCD_H) {
+                o[0] = pal[p[0]];
+                o[1] = pal[p[CE_LCD_H]];
+                o[2] = pal[p[2 * CE_LCD_H]];
+                o[3] = pal[p[3 * CE_LCD_H]];
+            }
+        }
+        return true;
+    }
+
+    /* any other format: convert the whole raster, then transpose */
+    static uint16_t raster[CE_LCD_W * CE_LCD_H];
+    render_rows_raster(raster, 0, CE_LCD_H);
+    for (unsigned y = y0; y < y1; y++) {
+        uint16_t *o = out + y * CE_LCD_W;
+        const uint16_t *p = raster + y;
+        for (unsigned x = 0; x < CE_LCD_W; x++, p += CE_LCD_H) o[x] = *p;
+    }
+    return true;
+}
+
+bool ce_lcd_render_rows(uint16_t *out, unsigned y0, unsigned y1) {
+    if (y1 > CE_LCD_H) y1 = CE_LCD_H;
+    if (y0 >= y1) return true;
+    return panel_transposed() ? render_rows_columns(out, y0, y1)
+                              : render_rows_raster(out, y0, y1);
 }

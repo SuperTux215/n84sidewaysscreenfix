@@ -27,7 +27,7 @@ HDRS      := $(wildcard src/*/*.h src/*/*/*.h src/*/*/*/*.h src/*/*/*.inc)
 
 all: host
 
-host: $(HB)/keymap_test $(HB)/zextest $(HB)/ezextest $(HB)/ez80_adl_test $(HB)/ez80_diff $(HB)/bench $(HB)/ti8x_test $(HB)/n84-host $(HB)/n84ce-host $(HB)/n84-ui
+host: $(HB)/ce_panel_test $(HB)/keymap_test $(HB)/zextest $(HB)/ezextest $(HB)/ez80_adl_test $(HB)/ez80_diff $(HB)/bench $(HB)/ti8x_test $(HB)/n84-host $(HB)/n84ce-host $(HB)/n84-ui
 
 $(HB)/keymap_test: tests/frontend/keymap_test.c src/frontend/keymap_ti8x.c $(TI8X) $(CORE_Z80) $(PLAT_HOST) $(HDRS)
 	@mkdir -p $(dir $@)
@@ -70,14 +70,19 @@ $(HB)/n84-ui: $(FRONTEND) $(CORE_Z80) $(CORE_EZ80) $(TI8X) $(CE_SRC) $(PLAT_HOST
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(HOST_CFLAGS) -o $@ $(filter %.c,$^)
 
+$(HB)/ce_panel_test: tests/ce/panel_test.c $(CORE_EZ80) $(CE_SRC) src/link/tivar.c $(PLAT_HOST) $(HDRS)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(HOST_CFLAGS) -Isrc/machine/ce -DCE_LOG=printf -o $@ $(filter %.c,$^)
+
 $(BUILD)/ti84p_test.rom: tools/mk_ti8x_testrom.py
 	@mkdir -p $(dir $@)
 	python3 tools/mk_ti8x_testrom.py $@
 
 # ZEXDOC on the eZ80 skips tests 50, 59, 60: they use DD-prefixed non-index
 # opcodes and SLL, which trap on a real eZ80.
-test: $(HB)/keymap_test $(HB)/zextest $(HB)/ezextest $(HB)/ez80_adl_test $(HB)/ez80_diff $(HB)/ti8x_test $(BUILD)/ti84p_test.rom
+test: $(HB)/ce_panel_test $(HB)/keymap_test $(HB)/zextest $(HB)/ezextest $(HB)/ez80_adl_test $(HB)/ez80_diff $(HB)/ti8x_test $(BUILD)/ti84p_test.rom
 	$(HB)/keymap_test dist/n84.keys.tns
+	$(HB)/ce_panel_test
 	$(HB)/zextest tests/z80/zexdoc.com | tee $(BUILD)/zexdoc.log
 	@! grep -q "ERROR" $(BUILD)/zexdoc.log
 	$(HB)/ezextest tests/z80/zexdoc.com 50 59 60 | tee $(BUILD)/ezexdoc.log
