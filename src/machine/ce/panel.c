@@ -17,15 +17,13 @@ int panel_layout = PANEL_LAYOUT_AUTO;
 
 static void set_madctl(uint8_t v) {
     panel.madctl = v;
-    if (v & PANEL_MADCTL_MV) panel.seen_mv = 1;
-    panel.sideways = panel.seen_mv && !(v & PANEL_MADCTL_MV);
+    panel.sideways = (v & PANEL_MADCTL_MV) != 0;
 }
 
 void panel_reset(void) {
     panel.cmd = 0;
     panel.paramIdx = 0;
     panel.madctl = 0;               /* ST7789 reset value */
-    panel.seen_mv = 0;
     panel.sideways = 0;
 }
 
@@ -33,7 +31,7 @@ void panel_hw_reset(void) { panel_reset(); }
 
 void panel_set_os_default(void) {
     panel_reset();
-    set_madctl(PANEL_MADCTL_MV);
+    set_madctl(PANEL_MADCTL_OS);
 }
 
 /*
@@ -64,23 +62,15 @@ uint8_t panel_spi_transfer(uint32_t txData, uint32_t *rxData) {
 }
 
 bool panel_save(FILE *image) {
-    uint8_t b[2] = { panel.madctl, panel.seen_mv };
+    uint8_t b[2] = { panel.madctl, 0 };     /* the second byte is reserved */
     return fwrite(b, 1, 2, image) == 2;
 }
 
 bool panel_restore(FILE *image) {
     uint8_t b[2];
     size_t n = fread(b, 1, 2, image);
-    if (n == 2) {
-        panel_reset();
-        panel.seen_mv = b[1];
-        set_madctl(b[0]);
-        panel.seen_mv |= b[1];
-        panel.sideways = panel.seen_mv && !(b[0] & PANEL_MADCTL_MV);
-        return true;
-    }
-    if (n == 1) {                    /* an earlier test build wrote only MADCTL */
-        panel_reset();
+    panel_reset();
+    if (n >= 1) {                    /* (earlier test builds wrote one or two bytes) */
         set_madctl(b[0]);
         return true;
     }

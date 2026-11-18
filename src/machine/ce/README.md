@@ -18,9 +18,10 @@ Changes made for N84 (2026):
   the frame buffer (CEmu's non-DMA mode).
 - `mem.c`: debugger hooks removed.
 - `panel.c`/`panel.h` (N84 code, replacing CEmu's `panel.c`): a minimal ST7789 model that only
-  tracks the MV (row/column exchange) bit of MADCTL. Programs that clear it (lcddrvce users, such
-  as the Buckshot Roulette port) get a column-major frame buffer, which `ce_lcd_render_rows`
-  transposes. The setting is stored at the end of save states (older states still load).
+  tracks the MV (row/column exchange) bit of MADCTL. The OS leaves it clear (MADCTL 0x08);
+  programs that set it (lcddrvce users, such as the Buckshot Roulette port, which writes 0x28)
+  get a column-major frame buffer, which `ce_lcd_render_rows` transposes. The N84 menu can force
+  either layout by hand. The setting is stored at the end of save states (older states still load).
 - Replaced by N84 code: `cpu.h`, `emu.h`, `usb/usb.h`, `debug/debug.h`,
   `os/os.h` (shims/stubs) and `ce.c` (CEmu's `asic.c`/`emu.c` role: device wiring,
   reset, page table for the core, run loop, frame conversion).

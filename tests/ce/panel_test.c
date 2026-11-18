@@ -2,10 +2,11 @@
  * N84 - TI-84 Plus CE panel orientation test (no ROM needed).
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * Checks that the panel model follows MADCTL's MV bit, that the frame is read
- * as a column-major buffer (screen pixel (x, y) = pixel x * 240 + y) while MV
- * is clear, and that the setting survives save states, including states
- * written before the panel model existed.
+ * Checks that the panel model follows MADCTL's MV bit (clear in the OS, MADCTL
+ * 0x08; set by lcddrvce programs, 0x28), that the frame is read as a
+ * column-major buffer (screen pixel (x, y) = pixel x * 240 + y) while MV is
+ * set, and that the setting survives save states, including states written
+ * before the panel model existed.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,39 +39,40 @@ static void madctl(uint8_t v) { send_cmd(0x36, &v, 1); }
 static void test_panel_commands(void) {
     panel_reset();
     CHECK(!panel_transposed(), "after reset the layout is the OS's");
-    madctl(0x48);
-    CHECK(!panel_transposed(), "MV clear before MV was ever seen set is NOT taken as sideways (misread safety)");
-    madctl(0x68);
-    CHECK(!panel_transposed(), "MADCTL 0x68 sets MV");
-    madctl(0x48);
-    CHECK(panel_transposed(), "MADCTL 0x48 clears MV after it was set: sideways");
+    madctl(0x08);
+    CHECK(!panel_transposed() && panel.madctl == 0x08, "the OS's MADCTL 0x08 (MV clear) is the normal layout");
+    madctl(0x28);
+    CHECK(panel_transposed() && panel.madctl == 0x28, "the game's MADCTL 0x28 (MV set) is sideways");
+    madctl(0x08);
+    CHECK(!panel_transposed(), "back to the OS's value");
     madctl(0xE8);
-    CHECK(!panel_transposed(), "MADCTL 0xE8 sets MV again");
+    CHECK(panel_transposed(), "MADCTL 0xE8 has MV set");
+    madctl(0xC8);
+    CHECK(!panel_transposed(), "MADCTL 0xC8 has MV clear");
 
     /* other commands and their parameters leave MADCTL alone */
+    madctl(0x28);
     const uint8_t caset[4] = { 0, 0, 0x01, 0x3F };
     send_cmd(0x2A, caset, 4);
     const uint8_t raset[4] = { 0, 0, 0x00, 0xEF };
     send_cmd(0x2B, raset, 4);
     send_cmd(0x2C, NULL, 0);
-    CHECK(!panel_transposed(), "CASET/RASET/RAMWR do not touch MV");
+    CHECK(panel_transposed() && panel.madctl == 0x28, "CASET/RASET/RAMWR do not touch MADCTL");
     CHECK(panel.frames > 0, "frames are counted");
 
     /* only the first MADCTL parameter counts */
-    send(false, 0x36); send(true, 0x20); send(true, 0x00);
+    send(false, 0x36); send(true, 0x08); send(true, 0x20);
     CHECK(!panel_transposed(), "extra parameters are ignored");
     /* a parameter with no command before it does not change anything */
+    madctl(0x28);
     panel.cmd = 0; panel.paramIdx = 0;
     send(true, 0x00);
-    CHECK(!panel_transposed(), "stray parameter");
+    CHECK(panel_transposed(), "stray parameter");
 
-    madctl(0x00);
-    CHECK(panel_transposed(), "now sideways");
     send_cmd(0x01, NULL, 0);
-    CHECK(!panel_transposed() && panel.madctl == 0 && !panel.seen_mv, "SWRESET goes back to the OS layout");
+    CHECK(!panel_transposed() && panel.madctl == 0, "SWRESET goes back to the OS layout");
 
-    madctl(0x20); madctl(0x00);
-    CHECK(panel_transposed(), "sideways again");
+    madctl(0x28);
     panel_hw_reset();
     CHECK(!panel_transposed(), "hardware reset goes back to the OS layout");
 
@@ -78,10 +80,10 @@ static void test_panel_commands(void) {
     panel_reset();
     panel_layout = PANEL_LAYOUT_SIDEWAYS;
     CHECK(panel_transposed(), "forced sideways");
-    madctl(0x20);
+    madctl(0x08);
     CHECK(panel_transposed(), "forced sideways ignores MADCTL");
     panel_layout = PANEL_LAYOUT_NORMAL;
-    madctl(0x00);
+    madctl(0x28);
     CHECK(!panel_transposed(), "forced normal ignores MADCTL");
     panel_layout = PANEL_LAYOUT_AUTO;
 }
@@ -98,15 +100,14 @@ static void test_through_spi(void) {
     spi_out(0x08, 0x01);                    /* CR2: enable */
     spi_out(0x09, 0x01);                    /*      TX enable (bit 8) */
     spi_frame(false, 0x36);
-    spi_frame(true, 0x60);                  /* MV set */
+    spi_frame(true, 0x08);                  /* what the OS writes */
     ce_run(1);
-    CHECK(!panel_transposed() && panel.seen_mv && panel.madctl == 0x60,
-          "MADCTL 0x60 through the SPI controller: madctl=%02X seen=%u", panel.madctl, panel.seen_mv);
+    CHECK(!panel_transposed() && panel.madctl == 0x08, "MADCTL 0x08 through the SPI controller: madctl=%02X", panel.madctl);
     spi_frame(false, 0x36);
-    spi_frame(true, 0x00);                  /* MV clear */
+    spi_frame(true, 0x28);                  /* what the game writes */
     spi_frame(false, 0x2C);
     ce_run(1);
-    CHECK(panel_transposed(), "MADCTL 0x00 through the SPI controller: madctl=%02X", panel.madctl);
+    CHECK(panel_transposed() && panel.madctl == 0x28, "MADCTL 0x28 through the SPI controller: madctl=%02X", panel.madctl);
     spi_out(0x08, 0x00);
 }
 
@@ -136,7 +137,7 @@ static void test_render_8bpp(void) {
     for (unsigned i = 0; i < CE_LCD_W * CE_LCD_H; i++) fb[i] = (uint8_t)(i * 7 + i / 251);
     lcd_setup(3, true);
 
-    /* MV set: the OS layout, 320 pixels per row */
+    /* MV clear: the OS layout, 320 pixels per row */
     panel_set_os_default();
     uint16_t *a = render(0, CE_LCD_H, NULL);
     unsigned bad = 0;
@@ -145,9 +146,9 @@ static void test_render_8bpp(void) {
             bad += a[y * CE_LCD_W + x] != lcd.palettes[0][fb[y * CE_LCD_W + x]];
     CHECK(bad == 0, "8bpp raster layout: %u wrong pixels", bad);
 
-    /* MV clear: column-major, pixel (x, y) at x * 240 + y */
+    /* MV set: column-major, pixel (x, y) at x * 240 + y */
     panel_set_os_default();
-    madctl(0x48);
+    madctl(0x28);
     CHECK(panel_transposed(), "setup: sideways");
     uint16_t *b = render(0, CE_LCD_H, NULL);
     bad = 0;
@@ -187,7 +188,7 @@ static void test_render_16bpp(void) {
     CHECK(!memcmp(a, fb, CE_LCD_W * CE_LCD_H * 2), "16bpp raster layout");
 
     panel_set_os_default();
-    madctl(0x48);
+    madctl(0x28);
     uint16_t *b = render(0, CE_LCD_H, NULL);
     unsigned bad = 0;
     for (unsigned y = 0; y < CE_LCD_H; y++)
@@ -211,7 +212,7 @@ static void test_render_16bpp(void) {
 static void test_state(void) {
     /* sideways state survives */
     FILE *f = tmpfile();
-    panel_set_os_default(); madctl(0x48);
+    panel_set_os_default(); madctl(0x28);
     CHECK(panel_transposed(), "setup: sideways");
     CHECK(ce_save_state(f), "save state");
     long full = ftell(f);
@@ -219,15 +220,15 @@ static void test_state(void) {
     CHECK(!panel_transposed(), "setup: normal");
     rewind(f);
     CHECK(ce_load_state(f), "load state");
-    CHECK(panel_transposed() && panel.madctl == 0x48 && panel.seen_mv, "sideways restored (madctl 0x%02X)", panel.madctl);
+    CHECK(panel_transposed() && panel.madctl == 0x28, "sideways restored (madctl 0x%02X)", panel.madctl);
 
     /* normal state survives */
     FILE *g = tmpfile();
-    panel_set_os_default(); madctl(0x68);
+    panel_set_os_default();
     CHECK(ce_save_state(g), "save");
-    panel_set_os_default(); madctl(0x48);
+    madctl(0x28);
     rewind(g);
-    CHECK(ce_load_state(g) && !panel_transposed() && panel.madctl == 0x68, "normal restored");
+    CHECK(ce_load_state(g) && !panel_transposed() && panel.madctl == 0x08, "normal restored");
 
     /* a state from before the panel model: the same bytes without the final two */
     rewind(f);
@@ -236,16 +237,16 @@ static void test_state(void) {
     FILE *old = tmpfile();
     fwrite(buf, 1, (size_t)full - 2, old);
     rewind(old);
-    panel_reset(); madctl(0x48);
+    madctl(0x28);
     CHECK(ce_load_state(old), "old-format state still loads");
-    CHECK(!panel_transposed() && (panel.madctl & PANEL_MADCTL_MV), "old-format state gets the OS (landscape) layout");
+    CHECK(!panel_transposed() && panel.madctl == PANEL_MADCTL_OS, "old-format state gets the OS layout");
 
-    /* an earlier test build wrote one byte (0 = MV never set): must come back as the OS layout */
+    /* earlier test builds wrote one byte */
     FILE *one = tmpfile();
     fwrite(buf, 1, (size_t)full - 1, one);
     rewind(one);
-    CHECK(ce_load_state(one), "one-byte state loads");
-    CHECK(!panel_transposed(), "one-byte state with MV clear is not taken as sideways");
+    madctl(0x08);
+    CHECK(ce_load_state(one) && panel_transposed(), "one-byte state loads its MADCTL");
     free(buf);
     fclose(f); fclose(g); fclose(old); fclose(one);
 }
