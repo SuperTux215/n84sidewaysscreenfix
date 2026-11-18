@@ -16,6 +16,9 @@
  *    screen is the same way up; only the memory layout differs.
  *
  * All other commands are accepted and ignored, and reads return zero.
+ *
+ * Because the frame encoding is only inferred (9-bit frames, bit 8 set for a
+ * parameter), the screen menu can override the detection by hand.
  */
 #ifndef N84_CE_PANEL_H
 #define N84_CE_PANEL_H
@@ -25,28 +28,46 @@
 
 #define PANEL_MADCTL_MV 0x20
 
+/* How the frame buffer is read. AUTO follows what the program does to the panel
+ * (see panel_transposed); the other two are the user's override from the menu. */
+enum { PANEL_LAYOUT_AUTO, PANEL_LAYOUT_NORMAL, PANEL_LAYOUT_SIDEWAYS, PANEL_LAYOUT_COUNT };
+extern int panel_layout;
+
 typedef struct panel_state {
     /* kept for the CEmu-derived code that still sets them */
     bool skipFrame, gammaDirty, accurateGamma;
     /* Saved state (see panel_save): */
     uint8_t madctl;      /* last parameter of MADCTL (36h) */
+    uint8_t seen_mv;     /* MADCTL has been seen with MV set since the last reset */
+    /* Not saved: */
     uint8_t cmd;         /* command whose parameters are arriving */
     uint8_t paramIdx;    /* number of parameters received for `cmd` */
+    uint8_t sideways;    /* MV was set and has since been cleared: column-major frame buffer */
+    uint32_t frames;     /* 9-bit frames received (diagnostics, shown in the menu) */
 } panel_state_t;
 extern panel_state_t panel;
 
-void panel_reset(void);          /* power-on / reset state: MADCTL = 0 */
+void panel_reset(void);          /* power-on / reset state */
 void panel_hw_reset(void);       /* reset line toggled through the control port */
 static inline void panel_vsync(void) {}
 static inline void init_panel(void) {}
 
-/* State after a reset of the OS orientation, for save states that predate the
- * panel model (they can only have been made in the OS's landscape layout). */
+/* The state of a panel the OS has set up: MV set, as the OS leaves it. Also
+ * what save states that predate the panel model get. */
 void panel_set_os_default(void);
 
-/* True when the frame buffer is column-major (MV cleared) and must be
- * transposed to get the picture. */
-static inline bool panel_transposed(void) { return !(panel.madctl & PANEL_MADCTL_MV); }
+/*
+ * True when the frame buffer is column-major and must be transposed.
+ *
+ * Automatic mode is deliberately conservative: the OS's own landscape picture
+ * must never be transposed because a command was misread. It only turns on
+ * after MADCTL was seen with MV set (the OS's setting) and then written with
+ * MV clear (what the lcddrvce-based programs do). A panel that has not been
+ * observed doing that is shown as the OS lays it out.
+ */
+static inline bool panel_transposed(void) {
+    return panel_layout == PANEL_LAYOUT_AUTO ? panel.sideways != 0 : panel_layout == PANEL_LAYOUT_SIDEWAYS;
+}
 
 bool panel_save(FILE *image);
 /* Returns false on a truncated block; a missing block (end of file) restores

@@ -15,6 +15,7 @@
 #include "machine/ti8x/ti8x.h"
 #include "machine/ce/ce.h"
 #include "machine/ce/ce_link.h"
+#include "machine/ce/panel.h"
 #include "machine/ti8x/ti8x_link.h"
 #include "link/tivar.h"
 #include "frontend/browser.h"
@@ -222,7 +223,7 @@ static void send_file(const machine_t *m, const char *path, const uint16_t *back
  * In-game menu
  * -------------------------------------------------------------------- */
 
-enum { M_RESUME, M_SEND, M_SAVE, M_LOAD, M_KEYS, M_RESET, M_TURBO, M_FPS, M_SKIP, M_LAUNCHER, M_QUIT, M_COUNT };
+enum { M_RESUME, M_SEND, M_SAVE, M_LOAD, M_KEYS, M_RESET, M_TURBO, M_FPS, M_SKIP, M_LAYOUT, M_LAUNCHER, M_QUIT, M_COUNT };
 
 typedef enum { ACT_RESUME, ACT_LAUNCHER, ACT_QUIT } menu_act_t;
 
@@ -235,10 +236,21 @@ static menu_act_t ingame_menu(const machine_t *m, const char *state_path, bool *
         static const char *const skip_names[] = {
             "Frameskip: auto", "Frameskip: off", "Frameskip: 1", "Frameskip: 2", "Frameskip: 3",
         };
+        /* how the CE's frame buffer is read: auto follows the program (lcddrvce programs such as
+         * Buckshot Roulette store it column-major); the numbers are the last MADCTL value and
+         * how many panel commands were received, in case auto does not pick it up */
+        static const char *const layout_names[] = { "auto", "normal", "sideways" };
+        char layout[48];
+        bool is_ce = m->draw == ce_draw_fb;
+        if (!is_ce) snprintf(layout, sizeof layout, "Screen layout: CE only");
+        else if (panel_layout == PANEL_LAYOUT_AUTO)
+            snprintf(layout, sizeof layout, "Screen: auto (%s) m%02X f%u", panel_transposed() ? "sideways" : "normal",
+                     panel.madctl, (unsigned)panel.frames);
+        else snprintf(layout, sizeof layout, "Screen: %s (set by hand)", layout_names[panel_layout]);
         const char *items[M_COUNT] = {
             "Resume", "Send file...", "Save state", "Load state", "Key guide", "Reset calculator",
             *turbo ? "Turbo: on" : "Turbo: off", config.show_fps ? "Show speed: on" : "Show speed: off",
-            skip_names[config.frameskip + 1], "Exit to launcher", "Quit N84",
+            skip_names[config.frameskip + 1], layout, "Exit to launcher", "Quit N84",
         };
         ui_list_t l = { m->name, items, NULL, M_COUNT, sel, NULL, NULL, backdrop };
         int r = ui_list(&l, NULL);
@@ -273,6 +285,7 @@ static menu_act_t ingame_menu(const machine_t *m, const char *state_path, bool *
         case M_TURBO: *turbo = !*turbo; break;
         case M_FPS: config.show_fps = !config.show_fps; config_save(); break;
         case M_SKIP: config.frameskip = config.frameskip >= 3 ? -1 : config.frameskip + 1; config_save(); break;
+        case M_LAYOUT: if (is_ce) panel_layout = (panel_layout + 1) % PANEL_LAYOUT_COUNT; break;
         case M_LAUNCHER: return ACT_LAUNCHER;
         case M_QUIT: return ACT_QUIT;
         default: break;

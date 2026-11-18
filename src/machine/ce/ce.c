@@ -338,6 +338,7 @@ void ce_reset(void) {
 bool ce_init(const uint8_t *rom, size_t size) {
     if (size < SIZE_FLASH_MIN || size > SIZE_FLASH_MAX_PAR) return false;
     memset(&cpu, 0, sizeof cpu);
+    panel_layout = PANEL_LAYOUT_AUTO;
     mem_init();
     if (!mem.ram.block) return false;
     mem.flash.size = SIZE_FLASH_MIN;
@@ -400,8 +401,8 @@ uint64_t ce_total_cycles(void) { return sched_total_cycles(); }
  *
  * Layout: "N84C", version, Flash size, then the CPU registers (the part of
  * ez80_t before the page tables), N84 CPU extras, and each CEmu module's
- * own save block, then the mem_state_t and RAM, then the panel's MADCTL byte
- * (optional when loading). Flash contents are not included: they are written
+ * own save block, then the mem_state_t and RAM, then the panel's MADCTL byte and
+ * flag (optional when loading). Flash contents are not included: they are written
  * back to the ROM file at the same time.
  * ==================================================================== */
 
